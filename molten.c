@@ -83,8 +83,13 @@ ZEND_API void mo_execute_internal(zend_execute_data *execute_data, zval *return_
 #endif
 
 /* Replace error call back functions */
+#if PHP_VERSION_ID >= 80000
+void (*trace_original_error_cb)(int type, zend_string *error_filename, const uint32_t error_lineno, zend_string *message);
+void molten_error_cb(int type, zend_string *error_filename, const uint32_t error_lineno, zend_string *message);
+#else
 void (*trace_original_error_cb)(int type, const char *error_filename, const uint error_lineno, const char *format, va_list args);
 void molten_error_cb(int type, const char *error_filename, const uint error_lineno, const char *format, va_list args);
+#endif
 
 static inline zend_function *obtain_zend_function(zend_bool internal, zend_execute_data *ex, zend_op_array *op_array TSRMLS_DC);
 
@@ -98,15 +103,44 @@ ZEND_DECLARE_MODULE_GLOBALS(molten)
 /* Make sapi_module accessable */
 extern sapi_module_struct sapi_module;
 
+ZEND_BEGIN_ARG_INFO_EX(arginfo_molten_curl_setopt, 0, 0, 3)
+    ZEND_ARG_INFO(0, ch)
+    ZEND_ARG_INFO(0, option)
+    ZEND_ARG_INFO(0, value)
+ZEND_END_ARG_INFO()
+
+ZEND_BEGIN_ARG_INFO_EX(arginfo_molten_curl_setopt_array, 0, 0, 2)
+    ZEND_ARG_INFO(0, ch)
+    ZEND_ARG_ARRAY_INFO(0, options, 0)
+ZEND_END_ARG_INFO()
+
+ZEND_BEGIN_ARG_INFO_EX(arginfo_molten_curl_exec, 0, 0, 1)
+    ZEND_ARG_INFO(0, ch)
+ZEND_END_ARG_INFO()
+
+ZEND_BEGIN_ARG_INFO_EX(arginfo_molten_curl_reset, 0, 0, 1)
+    ZEND_ARG_INFO(0, ch)
+ZEND_END_ARG_INFO()
+
+ZEND_BEGIN_ARG_INFO_EX(arginfo_molten_span_format, 0, 0, 0)
+ZEND_END_ARG_INFO()
+
+ZEND_BEGIN_ARG_INFO_EX(arginfo_molten_get_traceid, 0, 0, 0)
+ZEND_END_ARG_INFO()
+
+ZEND_BEGIN_ARG_INFO_EX(arginfo_molten_set_traceid, 0, 0, 1)
+    ZEND_ARG_INFO(0, trace_id)
+ZEND_END_ARG_INFO()
+
 /* Every user visible function must have an entry in trace_functions[]. */
 const zend_function_entry molten_functions[] = {
-    PHP_FE(molten_curl_setopt, NULL)
-    PHP_FE(molten_curl_setopt_array, NULL)
-    PHP_FE(molten_curl_exec, NULL)
-    PHP_FE(molten_curl_reset, NULL)
-    PHP_FE(molten_span_format, NULL)
-    PHP_FE(molten_get_traceid, NULL)
-    PHP_FE(molten_set_traceid, NULL)
+    PHP_FE(molten_curl_setopt, arginfo_molten_curl_setopt)
+    PHP_FE(molten_curl_setopt_array, arginfo_molten_curl_setopt_array)
+    PHP_FE(molten_curl_exec, arginfo_molten_curl_exec)
+    PHP_FE(molten_curl_reset, arginfo_molten_curl_reset)
+    PHP_FE(molten_span_format, arginfo_molten_span_format)
+    PHP_FE(molten_get_traceid, arginfo_molten_get_traceid)
+    PHP_FE(molten_set_traceid, arginfo_molten_set_traceid)
     PHP_FE_END  /* Must be the last line in trace_functions[] */
 };
 
@@ -147,10 +181,17 @@ static const mo_reload_def prd[] = {
 /* }}} */
 
 /* {{{ origin_funtion_handler */
+#if PHP_MAJOR_VERSION < 7
 zend_function *origin_curl_setopt =  NULL;
 zend_function *origin_curl_exec =  NULL;
 zend_function *origin_curl_setopt_array =  NULL;
 zend_function *origin_curl_reset = NULL;
+#else
+static zif_handler origin_curl_setopt_handler = NULL;
+static zif_handler origin_curl_exec_handler = NULL;
+static zif_handler origin_curl_setopt_array_handler = NULL;
+static zif_handler origin_curl_reset_handler = NULL;
+#endif
 /* }}} */
 
 /* {{{ molten reload curl function for performance */
@@ -169,42 +210,8 @@ static void molten_reload_curl_function()
         }
         p++;
     }
-#else
-    zend_function *orig, *replace;
-    const mo_reload_def *p = &(prd[0]);
-    while(p->orig_func != NULL) {
-        if (zend_hash_str_find_ptr(CG(function_table), p->save_func, strlen(p->orig_func)) == NULL) {
-            replace = zend_hash_str_find_ptr(CG(function_table), p->over_func, strlen(p->over_func));
-            if ((orig = zend_hash_str_find_ptr(CG(function_table), p->orig_func, strlen(p->orig_func))) != NULL) {
-                if (orig->type == ZEND_INTERNAL_FUNCTION) {
-                    //Not execute arg_info release
-                     orig->common.fn_flags = ZEND_ACC_PUBLIC;
-                     //Set orig handle
-                    if(!strcmp(p->orig_func,"curl_setopt")) {
-                        origin_curl_setopt =  pemalloc(sizeof(zend_internal_function), MO_HASH_FLAG_PERSISTENT);
-                        memcpy(origin_curl_setopt, orig, sizeof(zend_internal_function));
-                    } else if (!strcmp(p->orig_func,"curl_exec")) {
-                        origin_curl_exec =  pemalloc(sizeof(zend_internal_function), MO_HASH_FLAG_PERSISTENT);
-                        memcpy(origin_curl_exec, orig, sizeof(zend_internal_function));
-                    } else if (!strcmp(p->orig_func,"curl_setopt_array")) {
-                        origin_curl_setopt_array = pemalloc(sizeof(zend_internal_function) , MO_HASH_FLAG_PERSISTENT);
-                        memcpy(origin_curl_setopt_array, orig, sizeof(zend_internal_function));
-                    } else if (!strcmp(p->orig_func,"curl_reset")) {
-                        origin_curl_reset = pemalloc(sizeof(zend_internal_function), MO_HASH_FLAG_PERSISTENT);
-                        memcpy(origin_curl_reset, orig, sizeof(zend_internal_function));
-                    }
-                    function_add_ref(orig);
-                    zend_hash_str_update_mem(CG(function_table), p->orig_func, strlen(p->orig_func), replace, sizeof(zend_internal_function));
-                    function_add_ref(replace);
-                }
-            }
-        }
-        p++;
-    }
-#endif
 
     /* retrieve function from function table */
-#if PHP_MAJOR_VERSION < 7
     zend_function *orig_func;
     if (zend_hash_find(CG(function_table), "origin_molten_curl_setopt", sizeof("origin_molten_curl_setopt"), (void **)&orig_func) == SUCCESS ) {
         origin_curl_setopt = orig_func;
@@ -217,6 +224,41 @@ static void molten_reload_curl_function()
     }
     if (zend_hash_find(CG(function_table), "origin_molten_curl_reset", sizeof("origin_molten_curl_reset"), (void **)&orig_func) == SUCCESS ) {
         origin_curl_reset = orig_func;
+    }
+#else
+    zend_function *orig;
+    zend_function *replace;
+    const mo_reload_def *p = &(prd[0]);
+
+    while (p->orig_func != NULL) {
+        orig = zend_hash_str_find_ptr(CG(function_table), p->orig_func, strlen(p->orig_func));
+        replace = zend_hash_str_find_ptr(CG(function_table), p->over_func, strlen(p->over_func));
+
+        if (orig != NULL && replace != NULL && orig->type == ZEND_INTERNAL_FUNCTION && replace->type == ZEND_INTERNAL_FUNCTION) {
+            if (!strcmp(p->orig_func, "curl_setopt")) {
+                if (origin_curl_setopt_handler == NULL) {
+                    origin_curl_setopt_handler = orig->internal_function.handler;
+                }
+                orig->internal_function.handler = replace->internal_function.handler;
+            } else if (!strcmp(p->orig_func, "curl_exec")) {
+                if (origin_curl_exec_handler == NULL) {
+                    origin_curl_exec_handler = orig->internal_function.handler;
+                }
+                orig->internal_function.handler = replace->internal_function.handler;
+            } else if (!strcmp(p->orig_func, "curl_setopt_array")) {
+                if (origin_curl_setopt_array_handler == NULL) {
+                    origin_curl_setopt_array_handler = orig->internal_function.handler;
+                }
+                orig->internal_function.handler = replace->internal_function.handler;
+            } else if (!strcmp(p->orig_func, "curl_reset")) {
+                if (origin_curl_reset_handler == NULL) {
+                    origin_curl_reset_handler = orig->internal_function.handler;
+                }
+                orig->internal_function.handler = replace->internal_function.handler;
+            }
+        }
+
+        p++;
     }
 #endif
 }
@@ -232,21 +274,35 @@ static void molten_clear_reload_function()
     while (p->orig_func != NULL) {
         if (zend_hash_find(CG(function_table), p->save_func, strlen(p->save_func)+1, (void **)&orig) == SUCCESS) {
               zend_hash_update(CG(function_table), p->orig_func, strlen(p->orig_func)+1, orig, sizeof(zend_function), NULL);
-              zend_hash_del(CG(function_table), p->save_func, strlen(p->save_func)+1); 
+              zend_hash_del(CG(function_table), p->save_func, strlen(p->save_func)+1);
          }
         p++;
     }
 #else
     zend_function *orig;
     while (p->orig_func != NULL) {
-        if ((orig = zend_hash_str_find_ptr(CG(function_table), p->save_func, strlen(p->save_func))) != NULL) {
-              zend_hash_str_update_mem(CG(function_table), p->orig_func, strlen(p->orig_func), orig, sizeof(zend_internal_function));
-              function_add_ref(orig);
-              zend_hash_str_del(CG(function_table), p->save_func, strlen(p->save_func));
-         }
+        orig = zend_hash_str_find_ptr(CG(function_table), p->orig_func, strlen(p->orig_func));
+        if (orig != NULL && orig->type == ZEND_INTERNAL_FUNCTION) {
+            if (!strcmp(p->orig_func, "curl_setopt")) {
+                if (origin_curl_setopt_handler != NULL) {
+                    orig->internal_function.handler = origin_curl_setopt_handler;
+                }
+            } else if (!strcmp(p->orig_func, "curl_exec")) {
+                if (origin_curl_exec_handler != NULL) {
+                    orig->internal_function.handler = origin_curl_exec_handler;
+                }
+            } else if (!strcmp(p->orig_func, "curl_setopt_array")) {
+                if (origin_curl_setopt_array_handler != NULL) {
+                    orig->internal_function.handler = origin_curl_setopt_array_handler;
+                }
+            } else if (!strcmp(p->orig_func, "curl_reset")) {
+                if (origin_curl_reset_handler != NULL) {
+                    orig->internal_function.handler = origin_curl_reset_handler;
+                }
+            }
+        }
         p++;
     }
-
 #endif
 }
 /* }}} */
@@ -265,17 +321,21 @@ PHP_FUNCTION(molten_curl_setopt)
                 zval *copy_header;
                 MO_ALLOC_INIT_ZVAL(copy_header);
                 ZVAL_ZVAL(copy_header, *zvalue, 1, 0);
-                add_index_zval(PTG(pit).curl_header_record, Z_RESVAL_P(zid), copy_header);
+                add_index_zval(PTG(pit).curl_header_record, mo_get_resource_or_object_id(zid), copy_header);
             }
         }
 #else
         zval *zid, *zvalue;
         zend_long  options;
+#if PHP_VERSION_ID >= 80000
+        if (zend_parse_parameters(ZEND_NUM_ARGS() TSRMLS_CC, "zlz", &zid, &options, &zvalue) == SUCCESS) {
+#else
         if (zend_parse_parameters(ZEND_NUM_ARGS() TSRMLS_CC, "rlz", &zid, &options, &zvalue) == SUCCESS) {
-            if (options == Z_LVAL(PTG(pit).curl_http_header_const) && MO_Z_TYPE_P(zvalue) == IS_ARRAY) {
+#endif
+            if (mo_is_resource_or_object(zid) && options == Z_LVAL(PTG(pit).curl_http_header_const) && MO_Z_TYPE_P(zvalue) == IS_ARRAY) {
                 zval copy_header;
                 ZVAL_DUP(&copy_header, zvalue);
-                add_index_zval(PTG(pit).curl_header_record, Z_RESVAL_P(zid), &copy_header);
+                add_index_zval(PTG(pit).curl_header_record, mo_get_resource_or_object_id(zid), &copy_header);
             }
         }
 #endif
@@ -284,9 +344,15 @@ PHP_FUNCTION(molten_curl_setopt)
     }
    
     /* execute origin function */
+#if PHP_MAJOR_VERSION < 7
     if (origin_curl_setopt != NULL) {
         origin_curl_setopt->internal_function.handler(INTERNAL_FUNCTION_PARAM_PASSTHRU);
     }
+#else
+    if (origin_curl_setopt_handler != NULL) {
+        origin_curl_setopt_handler(INTERNAL_FUNCTION_PARAM_PASSTHRU);
+    }
+#endif
 
     /* after */
     /* nothing */
@@ -347,15 +413,19 @@ PHP_FUNCTION(molten_curl_exec)
         push_span_context(&PTG(span_stack));
     }
 
+#if PHP_VERSION_ID >= 80000
+    int result = zend_parse_parameters(ZEND_NUM_ARGS() TSRMLS_CC, "z", &res);
+#else
     int result = zend_parse_parameters(ZEND_NUM_ARGS() TSRMLS_CC, "r", &res);
-    if (result == SUCCESS) {
+#endif
+    if (result == SUCCESS && mo_is_resource_or_object(res)) {
 
         /* build header */
         mo_interceptor_t *pit = &PTG(pit);
         zval *tmp = NULL;
         zval *option = NULL;
         int is_init = 0;
-        if (mo_zend_hash_index_zval_find(Z_ARRVAL_P(pit->curl_header_record), Z_RESVAL_P(res), (void **)&tmp) == SUCCESS) {
+        if (mo_zend_hash_index_zval_find(Z_ARRVAL_P(pit->curl_header_record), mo_get_resource_or_object_id(res), (void **)&tmp) == SUCCESS) {
             option = tmp;
         } else {
             MO_ALLOC_INIT_ZVAL(option);
@@ -391,9 +461,15 @@ PHP_FUNCTION(molten_curl_exec)
     }
     
     /* execute origin function */
+#if PHP_MAJOR_VERSION < 7
     if (origin_curl_exec != NULL) {
         origin_curl_exec->internal_function.handler(INTERNAL_FUNCTION_PARAM_PASSTHRU);
     }
+#else
+    if (origin_curl_exec_handler != NULL) {
+        origin_curl_exec_handler(INTERNAL_FUNCTION_PARAM_PASSTHRU);
+    }
+#endif
 
     /* after */
     /* must sampling will do this */
@@ -434,7 +510,11 @@ PHP_FUNCTION(molten_curl_setopt_array)
 {
     /* before */
     zval *zid, *arr;
+#if PHP_VERSION_ID >= 80000
+    if (zend_parse_parameters(ZEND_NUM_ARGS() TSRMLS_CC, "za", &zid, &arr) == SUCCESS && mo_is_resource_or_object(zid)) {
+#else
     if (zend_parse_parameters(ZEND_NUM_ARGS() TSRMLS_CC, "ra", &zid, &arr) == SUCCESS) {
+#endif
         HashTable *ht = Z_ARRVAL_P(arr);
         zval *http_header = NULL;
         if (mo_zend_hash_index_zval_find(ht, Z_LVAL(PTG(pit).curl_http_header_const), (void **)&http_header) == SUCCESS) {
@@ -447,15 +527,21 @@ PHP_FUNCTION(molten_curl_setopt_array)
 #else
             zval copy_header;
             ZVAL_DUP(&copy_header, http_header);
-            add_index_zval(PTG(pit).curl_header_record, Z_RESVAL_P(zid), &copy_header);
+            add_index_zval(PTG(pit).curl_header_record, mo_get_resource_or_object_id(zid), &copy_header);
 #endif
         }
     }
     
     /* execute origin function */
+#if PHP_MAJOR_VERSION < 7
     if (origin_curl_setopt_array != NULL) {
         origin_curl_setopt_array->internal_function.handler(INTERNAL_FUNCTION_PARAM_PASSTHRU);
     }
+#else
+    if (origin_curl_setopt_array_handler != NULL) {
+        origin_curl_setopt_array_handler(INTERNAL_FUNCTION_PARAM_PASSTHRU);
+    }
+#endif
 
     /* after */
     /* donothing */
@@ -469,15 +555,25 @@ PHP_FUNCTION(molten_curl_reset)
     zval *zid;
 
     /* if reset resource, curl_header_record map will be delete */
+#if PHP_VERSION_ID >= 80000
+    if (zend_parse_parameters(ZEND_NUM_ARGS() TSRMLS_CC, "z", &zid) == SUCCESS && mo_is_resource_or_object(zid)) {
+#else
     if (zend_parse_parameters(ZEND_NUM_ARGS() TSRMLS_CC, "r", &zid) == SUCCESS) {
+#endif
         HashTable *ht = Z_ARRVAL_P(PTG(pit).curl_header_record);
-        mo_zend_hash_index_del(ht, Z_RESVAL_P(zid));
+        mo_zend_hash_index_del(ht, mo_get_resource_or_object_id(zid));
     }
     
     /* execute origin function */
+#if PHP_MAJOR_VERSION < 7
     if (origin_curl_reset != NULL) {
         origin_curl_reset->internal_function.handler(INTERNAL_FUNCTION_PARAM_PASSTHRU);
     }
+#else
+    if (origin_curl_reset_handler != NULL) {
+        origin_curl_reset_handler(INTERNAL_FUNCTION_PARAM_PASSTHRU);
+    }
+#endif
 
     /* after */
     /* donothing */
@@ -874,7 +970,7 @@ static void frame_build(mo_frame_t *frame, zend_bool internal, unsigned char typ
     if (zf->common.function_name) {
         smart_string_appends(&frame->function, MO_STR(zf->common.function_name));
     } 
-#if PHP_VERSION_ID >= 50414
+#if PHP_VERSION_ID >= 50414 && PHP_VERSION_ID < 80000
     if (zf->common.scope && zf->common.scope->trait_aliases) {
         /* Use trait alias instead real function name.
          * There is also a bug "#64239 Debug backtrace changed behavior
@@ -1197,6 +1293,37 @@ ZEND_API void mo_execute_internal(zend_execute_data *execute_data, zval *return_
 #endif
 
 /* {{{ Ptracing Custom Error CallBack */
+#if PHP_VERSION_ID >= 80000
+void molten_error_cb(int type, zend_string *error_filename, const uint32_t error_lineno, zend_string *message)
+{
+    error_handling_t  error_handling;
+    char *error_info = NULL;
+    int total_len = 200;
+    const char *file = error_filename ? ZSTR_VAL(error_filename) : "unknown";
+    const char *msg = message ? ZSTR_VAL(message) : "";
+
+    error_handling = EG(error_handling);
+
+    if (error_handling == EH_NORMAL) {
+        switch (type) {
+            case E_ERROR:
+            case E_CORE_ERROR:
+            case E_USER_ERROR:
+                error_info = emalloc(total_len);
+                bzero(error_info, total_len);
+                snprintf(error_info, total_len, "type:%d, file:%s, line:%u %s", type, file, error_lineno, msg);
+                error_info[total_len-1] = '\0';
+                if (PTG(pct).pch.is_sampled == 1 && PTG(in_request) == 1) {
+                    mo_add_next_index_string(PTG(pct).error_list, error_info, 1);
+                }
+                mo_rep_record_error(&PTG(pre), &PTG(request_uri), error_info, PTG(execute_begin_time));
+                efree(error_info);
+        }
+    }
+
+    trace_original_error_cb(type, error_filename, error_lineno, message);
+}
+#else
 void molten_error_cb(int type, const char *error_filename, const uint error_lineno, const char *format, va_list args)
 {
     TSRMLS_FETCH();
@@ -1209,18 +1336,14 @@ void molten_error_cb(int type, const char *error_filename, const uint error_line
 #else
     error_handling  = PG(error_handling);
 #endif
-    
-    /* record error */
+
     if (error_handling == EH_NORMAL) {
         switch (type) {
             case E_ERROR:
-            //case E_WARNING:
             case E_CORE_ERROR:
-            //case E_CORE_WARNING:
             case E_USER_ERROR:
-            //case E_USER_WARNING:
                 error_info = emalloc(total_len);
-                bzero(error_info, total_len); 
+                bzero(error_info, total_len);
                 int pos = snprintf(error_info, total_len, "type:%d, file:%s, line:%d ", type, error_filename, error_lineno);
                 if (pos < total_len-1) {
                     va_list copy_args;
@@ -1229,21 +1352,17 @@ void molten_error_cb(int type, const char *error_filename, const uint error_line
                     va_end(copy_args);
                 }
                 error_info[total_len-1] = '\0';
-
-                /* set to sampled error string */
                 if (PTG(pct).pch.is_sampled == 1 && PTG(in_request) == 1) {
                     mo_add_next_index_string(PTG(pct).error_list, error_info, 1);
                 }
-
-                /* report */
                 mo_rep_record_error(&PTG(pre), &PTG(request_uri), error_info, PTG(execute_begin_time));
-
                 efree(error_info);
         }
     }
 
     trace_original_error_cb(type, error_filename, error_lineno, format, args);
 }
+#endif
 /* }}} */
 
 /* add http header */

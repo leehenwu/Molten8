@@ -21,6 +21,18 @@
 #include "ext/json/php_json.h"
 #include "ext/standard/php_array.h"
 
+#if PHP_VERSION_ID >= 80000
+#ifndef TSRMLS_DC
+#define TSRMLS_DC
+#define TSRMLS_CC
+#define TSRMLS_D
+#define TSRMLS_C
+#define TSRMLS_FETCH()
+#define TSRMLS_FETCH_FROM_CTX(ctx)
+#define TSRMLS_SET_CTX(ctx)
+#endif
+#endif
+
 
 #if PHP_VERSION_ID < 70000
 
@@ -187,6 +199,28 @@ static void inline mo_php_json_encode(smart_string *s, zval *z, int options)
 #define Z_RESVAL(z)                 Z_RES_HANDLE(z)
 #define Z_RESVAL_P(z)               Z_RES_HANDLE_P(z)
 
+static inline zend_bool mo_is_resource_or_object(zval *z)
+{
+#if PHP_VERSION_ID >= 80000
+    return (Z_TYPE_P(z) == IS_RESOURCE || Z_TYPE_P(z) == IS_OBJECT) ? 1 : 0;
+#else
+    return (Z_TYPE_P(z) == IS_RESOURCE) ? 1 : 0;
+#endif
+}
+
+static inline zend_ulong mo_get_resource_or_object_id(zval *z)
+{
+    if (Z_TYPE_P(z) == IS_RESOURCE) {
+        return Z_RESVAL_P(z);
+    }
+#if PHP_VERSION_ID >= 80000
+    if (Z_TYPE_P(z) == IS_OBJECT) {
+        return (zend_ulong)Z_OBJ_HANDLE_P(z);
+    }
+#endif
+    return 0;
+}
+
 #define MO_MAKE_STD_ZVAL(p)                     zval _stack_zval_##p; p = &(_stack_zval_##p)
 #define MO_ALLOC_INIT_ZVAL(p)                   do{p = emalloc(sizeof(zval)); bzero(p, sizeof(zval));}while(0)
 #define MO_INIT_ZVAL(z)                         bzero(z, sizeof(zval))
@@ -225,7 +259,11 @@ static inline int mo_call_user_function(HashTable *ht, zval **obj, zval *functio
 static inline zval *mo_zend_read_property(zend_class_entry *class_ptr, zval *obj, char *s, int len, int silent)
 {
     zval rv;
+#if PHP_VERSION_ID >= 80000
+    return zend_read_property(class_ptr, Z_OBJ_P(obj), s, len, silent, &rv);
+#else
     return zend_read_property(class_ptr, obj, s, len, silent, &rv);
+#endif
 }
 
 static inline int mo_zend_get_constant(char *key, int len, zval *z)

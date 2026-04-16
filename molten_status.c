@@ -56,8 +56,12 @@ void mo_request_handle(mo_ctrl_t *mrt TSRMLS_DC)
 #else
             php_stream_rewind(SG(request_info).request_body);
             zend_string *post_data = php_stream_copy_to_mem(SG(request_info).request_body, PHP_STREAM_COPY_ALL, 0);
-            res = mo_ctrl_update_sampling(ZSTR_VAL(post_data), mrt->mcm);
-            zend_string_free(post_data);
+            if (post_data != NULL) {
+                res = mo_ctrl_update_sampling(ZSTR_VAL(post_data), mrt->mcm);
+                zend_string_free(post_data);
+            } else {
+                res = -1;
+            }
 
 #endif
             php_output_start_default(TSRMLS_C); 

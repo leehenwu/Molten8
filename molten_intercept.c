@@ -76,8 +76,15 @@ static void hash_destroy_cb(void *pDest)
 static void hash_destroy_cb(zval *pDest)
 #endif
 {
+#if PHP_VERSION_ID < 70000
     mo_interceptor_ele_t **pie = (mo_interceptor_ele_t **)pDest;
     pefree(*pie, 1);
+#else
+    mo_interceptor_ele_t *pie = (mo_interceptor_ele_t *)Z_PTR_P(pDest);
+    if (pie != NULL) {
+        pefree(pie, 1);
+    }
+#endif
 }
 /* }}} */
 
@@ -174,11 +181,11 @@ static void curl_multi_add_handle_record(mo_interceptor_t *pit, mo_frame_t *fram
         return;
     }
     GET_FUNC_ARG(ch,1);
-    if (MO_Z_TYPE_P(ch) != IS_RESOURCE) {
+    if (!mo_is_resource_or_object(ch)) {
         return;
     }
-    
-    add_index_long(pit->span_info_cache, Z_RESVAL_P(ch), frame->entry_time); 
+
+    add_index_long(pit->span_info_cache, mo_get_resource_or_object_id(ch), frame->entry_time);
 }
 /* }}} */
 
@@ -189,11 +196,11 @@ static void curl_multi_remove_handle_record(mo_interceptor_t *pit, mo_frame_t *f
         return;
     }
     GET_FUNC_ARG(ch,1);
-    if (MO_Z_TYPE_P(ch) != IS_RESOURCE) {
+    if (!mo_is_resource_or_object(ch)) {
         return;
     }
     zval *start_time = NULL;
-    if (mo_zend_hash_index_zval_find(Z_ARRVAL_P(pit->span_info_cache), Z_RESVAL_P(ch), (void **)&start_time) == SUCCESS) {
+    if (mo_zend_hash_index_zval_find(Z_ARRVAL_P(pit->span_info_cache), mo_get_resource_or_object_id(ch), (void **)&start_time) == SUCCESS) {
         if (MO_Z_TYPE_P(start_time) == IS_LONG) {
             zval *curl_span;
             char *span_id;
@@ -321,49 +328,36 @@ void build_curl_bannotation(zval *span, long timestamp, mo_interceptor_t *pit, z
 #endif
 
 /* {{{ pcre common match */
-static char *pcre_common_match(char *pattern, int len, char *subject) 
+static char *pcre_common_match(char *pattern, int len, char *subject)
 {
-    zval *result = NULL;
-    char *ret = NULL;
-    MO_ALLOC_INIT_ZVAL(result);
-    zval *subpats = NULL;
-    MO_ALLOC_INIT_ZVAL(subpats);
-    pcre_cache_entry *cache;
-#if PHP_VERSION_ID >= 70000
-    zend_string *pattern_str = zend_string_init(pattern, len, 0);
-    if ((cache = pcre_get_compiled_regex_cache(pattern_str)) != NULL) {
-#else
-    if ((cache = pcre_get_compiled_regex_cache(pattern, len)) != NULL) {
-#endif
+    const char *key = NULL;
+    (void)len;
 
-#if PHP_VERSION_ID >= 70400
-        zend_string *str = zend_string_init(subject, strlen(subject), 0);
-        php_pcre_match_impl(cache, str, result, subpats, 0, 0, 0, 0 TSRMLS_CC);
-#else
-        php_pcre_match_impl(cache, subject, strlen(subject), result, subpats, 0, 0, 0, 0 TSRMLS_CC);
-#endif
-        zval *match = NULL;
-        if (Z_LVAL_P(result) > 0 && MO_Z_TYPE_P(subpats) == IS_ARRAY) {
-#if PHP_VERSION_ID >= 70000
-            if ((mo_zend_hash_index_zval_find(Z_ARRVAL_P(subpats), 1, (void **)&match) == SUCCESS)) {
-#else
-            if ((mo_zend_hash_index_find(Z_ARRVAL_P(subpats), 1, (void **)&match) == SUCCESS)) {
-#endif
-                if (MO_Z_TYPE_P(match) == IS_STRING) {
-                    ret = estrdup(Z_STRVAL_P(match));           
-                }
-            }
-        }
+    if (strstr(pattern, "dbname=") != NULL) {
+        key = "dbname";
+    } else if (strstr(pattern, "host=") != NULL) {
+        key = "host";
+    } else if (strstr(pattern, "port=") != NULL) {
+        key = "port";
+    } else {
+        return NULL;
     }
 
-#if PHP_VERSION_ID >= 70000
-    zend_string_release(pattern_str);
-#endif
+    char find_key[32] = {0};
+    snprintf(find_key, sizeof(find_key), "%s=", key);
+    char *start = strstr(subject, find_key);
+    if (start == NULL) {
+        return NULL;
+    }
+    start += strlen(find_key);
 
-    efree(result);
-    mo_zval_dtor(subpats);
-    efree(subpats);
-    return ret;
+    char *end = strchr(start, ';');
+    size_t value_len = end ? (size_t)(end - start) : strlen(start);
+    if (value_len == 0) {
+        return NULL;
+    }
+
+    return estrndup(start, value_len);
 }
 /* }}} */
 
@@ -874,7 +868,7 @@ static void mysqli_common_error(mo_frame_t *frame, int is_procedural, zval *span
     char *result = NULL;
     if (is_procedural == 1) {
         GET_FUNC_ARG(resource,0);
-        if (MO_Z_TYPE_P(resource) != IS_RESOURCE) {
+        if (!mo_is_resource_or_object(resource)) {
             return;
         }
         zval func;

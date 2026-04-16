@@ -29,6 +29,8 @@ base on php, already run on thousand instance on production env.
 
 Everything you should need to install molten on your system.
 
+Supported PHP versions: PHP 7.0+ (including PHP 8.x).
+
 ~~~
 phpize
 ./configure
