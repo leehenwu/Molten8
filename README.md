@@ -1,6 +1,6 @@
 # molten
 
-> Readme in [Chinese 中文]((https://github.com/leehenwu/Molten8/blob/main/README_ZH.md))
+> Readme in [Chinese 中文](https://github.com/leehenwu/Molten8/blob/main/README_ZH.md)
 
 [![Build Status](https://travis-ci.org/chuan-yun/Molten.svg?branch=master)](https://travis-ci.org/chuan-yun/Molten)
 
